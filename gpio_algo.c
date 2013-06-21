@@ -89,22 +89,16 @@ static int sclhi(void)
 	/* Not all adapters have scl sense line... */
 
 	start = jiffies;
+/*
 	while (!getscl()) {
-		/* This hw knows how to read the clock line, so we wait
-		 * until it actually gets high.  This is safer as some
-		 * chips may hold it low ("clock stretching") while they
-		 * are processing data internally.
-		 */
 		if (time_after(jiffies, start + TIMEOUT)) {
-			/* Test one last time, as we may have been preempted
-			 * between last check and timeout test.
-			 */
 			if (getscl())
 				break;
 			return -ETIMEDOUT;
 		}
 		cpu_relax();
 	}
+*/
 #ifdef DEBUG
 	if (jiffies != start && i2c_debug >= 3)
 		pr_debug("i2c-algo-bit: needed %ld jiffies for SCL to go "
