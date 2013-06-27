@@ -27,6 +27,12 @@ MODULE_PARM_DESC(i2c_debug,
 		 "debug level - 0 off; 1 normal; 2 verbose; 3 very verbose");
 #endif
 
+struct gpio_data {
+	u8 addr;
+	u8 reg;
+};
+
+
 /* --- setting states on the bus with the right timing: ---------------	*/
 
 #define UDELAY 10
@@ -153,7 +159,7 @@ static int i2c_outb(struct i2c_adapter *i2c_adap, unsigned char c)
 	int i;
 	int sb;
 	int ack;
-
+	
 	/* assert: scl is low */
 	for (i = 7; i >= 0; i--) {
 		
@@ -170,7 +176,7 @@ static int i2c_outb(struct i2c_adapter *i2c_adap, unsigned char c)
 		scllo();
 	}
 	sdahi();
-
+	sclhi();
 	/* read ack: SDA should be pulled down by slave, or it may
 	 * NAK (usually to report problems with the data we wrote).
 	 */
@@ -449,12 +455,6 @@ static u32 bit_func(struct i2c_adapter *adap)
 
 /*------------ SYSFS Interface -------------*/
 
-static struct gpio_data {
-	u8 addr;
-	u8 reg;
-};
-
-
 static ssize_t show_addr(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
@@ -505,7 +505,7 @@ static ssize_t show_data(struct device *dev, struct device_attribute *attr, char
 	struct gpio_data *data = i2c_get_adapdata(adap);
 	unsigned char i2c_buf[1];
 	u8 regaddr = data->reg;	
-	struct i2c_msg msgs[] = {
+	struct i2c_msg msgs[2] = {
 		{
 			.addr	= data->addr,
 			.len	= 1,
@@ -519,7 +519,7 @@ static ssize_t show_data(struct device *dev, struct device_attribute *attr, char
 	};
 
 	int ret;	
-	ret = i2c_transfer(adap, &msgs, 2);
+	ret = i2c_transfer(adap, msgs, 2);
 	if (ret != 2) {
 		return -EIO;
 	}
@@ -585,6 +585,7 @@ static int __init gpio_init(void)
 	device_create_file(&gpio_adapter.dev, &dev_attr_addr);
 	device_create_file(&gpio_adapter.dev, &dev_attr_reg);
 	device_create_file(&gpio_adapter.dev, &dev_attr_data);
+
 	return 0;
 }
 
