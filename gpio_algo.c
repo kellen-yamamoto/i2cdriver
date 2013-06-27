@@ -156,9 +156,11 @@ static int i2c_outb(struct i2c_adapter *i2c_adap, unsigned char c)
 
 	/* assert: scl is low */
 	for (i = 7; i >= 0; i--) {
+		
 		sb = (c >> i) & 1;
 		setsda(sb);
 		udelay((UDELAY + 1) / 2);
+		sclhi();
 		/* FIXME do arbitration here:
 		 * if (sb && !getsda()) -> ouch! Get out of here.
 		 *
@@ -232,10 +234,10 @@ static int sendbytes(struct i2c_adapter *i2c_adap, struct i2c_msg *msg)
 {
 	const unsigned char *temp = msg->buf;
 	int count = msg->len;
+
 	unsigned short nak_ok = msg->flags & I2C_M_IGNORE_NAK;
 	int retval;
 	int wrcount = 0;
-
 	while (count > 0) {
 		retval = i2c_outb(i2c_adap, *temp);
 
@@ -397,10 +399,10 @@ static int bit_xfer(struct i2c_adapter *i2c_adap,
 	int i, ret;
 	unsigned short nak_ok;
 
-
 	i2c_start();
 	for (i = 0; i < num; i++) {
 		pmsg = &msgs[i];
+
 		nak_ok = pmsg->flags & I2C_M_IGNORE_NAK;
 		if (!(pmsg->flags & I2C_M_NOSTART)) {
 			if (i) {
@@ -445,6 +447,116 @@ static u32 bit_func(struct i2c_adapter *adap)
 	       I2C_FUNC_10BIT_ADDR | I2C_FUNC_PROTOCOL_MANGLING;
 }
 
+/*------------ SYSFS Interface -------------*/
+
+static struct gpio_data {
+	u8 addr;
+	u8 reg;
+};
+
+
+static ssize_t show_addr(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	return sprintf(buf, "%d\n", data->addr);
+}
+
+static ssize_t set_addr(struct device *dev, struct device_attribute *attr, char *buf, size_t count)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	
+	u8 addr;
+	int error;
+	
+	error = kstrtou8(buf, 10, &addr);
+	data->addr = addr;
+	return count;
+}
+
+static DEVICE_ATTR(addr, S_IWUSR | S_IRUGO, show_addr, set_addr);
+
+static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	return sprintf(buf, "%d\n", data->reg);
+}
+
+static ssize_t set_reg(struct device *dev, struct device_attribute *attr, char *buf, size_t count)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	
+	u8 reg;
+	int error;
+	
+	error = kstrtou8(buf, 10, &reg);
+	data->reg = reg;
+	return count;
+}
+
+static DEVICE_ATTR(reg, S_IWUSR | S_IRUGO, show_reg, set_reg);
+
+static ssize_t show_data(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	unsigned char i2c_buf[1];
+	u8 regaddr = data->reg;	
+	struct i2c_msg msgs[] = {
+		{
+			.addr	= data->addr,
+			.len	= 1,
+			.buf	= &regaddr,
+		}, {
+			.addr	= data->addr,
+			.flags	= I2C_M_RD,
+			.len	= 1,
+			.buf	= i2c_buf,
+		}
+	};
+
+	int ret;	
+	ret = i2c_transfer(adap, &msgs, 2);
+	if (ret != 2) {
+		return -EIO;
+	}
+	sprintf(buf, "Read: \n");	
+	return 0;
+}
+
+static ssize_t set_data(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	
+	u8 val;
+	int error;
+	error = kstrtou8(buf, 10, &val);
+	if (error)
+		return error;
+	
+	u8 i2c_buf[2] = { data->reg, val };
+
+	struct i2c_msg msg = {
+		.addr	= data->addr,
+		.flags	= I2C_M_IGNORE_NAK,
+		.len	= 2,
+		.buf	= i2c_buf,
+	};
+	
+	int ret;	
+	ret = i2c_transfer(adap, &msg, 1);
+	if (ret != 1) {
+		return -EIO;
+	}
+	return count;
+}
+
+static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
+		
 
 /* -----exported algorithm data: ------------------------------	*/
 
@@ -464,7 +576,16 @@ static struct i2c_adapter gpio_adapter = {
 
 static int __init gpio_init(void)
 {
-	return i2c_add_adapter(&gpio_adapter);
+	struct gpio_data *data;
+	i2c_add_adapter(&gpio_adapter);
+	data = devm_kzalloc(&gpio_adapter.dev, sizeof(struct gpio_data), GFP_KERNEL);
+	if(!data)
+		return -ENOMEM;
+	i2c_set_adapdata(&gpio_adapter, data);
+	device_create_file(&gpio_adapter.dev, &dev_attr_addr);
+	device_create_file(&gpio_adapter.dev, &dev_attr_reg);
+	device_create_file(&gpio_adapter.dev, &dev_attr_data);
+	return 0;
 }
 
 static void __exit gpio_exit(void)
