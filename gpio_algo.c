@@ -13,7 +13,7 @@
 #include <linux/i2c-algo-bit.h>
 #include <linux/gpio.h>
 
-#define GPIO1 17
+#define GPIO1 17 
 #define GPIO2 27
 
 static int bit_test;	/* see if the line-setting functions work	*/
@@ -36,7 +36,7 @@ struct gpio_data {
 /* --- setting states on the bus with the right timing: ---------------	*/
 
 #define UDELAY 10
-#define TIMEOUT
+#define TIMEOUT 500
 
 static void setsda(int val)
 {
@@ -56,6 +56,7 @@ static int getsda(void)
 	return ret;
 }
 
+/*
 static int getscl(void)
 {
 	int ret;
@@ -63,6 +64,7 @@ static int getscl(void)
 	ret = gpio_get_value(GPIO2);
 	return ret;
 }
+*/
 
 static inline void sdalo(void)
 {
@@ -88,28 +90,7 @@ static inline void scllo(void)
  */
 static int sclhi(void)
 {
-	unsigned long start;
-
 	setscl(1);
-
-	/* Not all adapters have scl sense line... */
-
-	start = jiffies;
-/*
-	while (!getscl()) {
-		if (time_after(jiffies, start + TIMEOUT)) {
-			if (getscl())
-				break;
-			return -ETIMEDOUT;
-		}
-		cpu_relax();
-	}
-*/
-#ifdef DEBUG
-	if (jiffies != start && i2c_debug >= 3)
-		pr_debug("i2c-algo-bit: needed %ld jiffies for SCL to go "
-			 "high\n", jiffies - start);
-#endif
 
 	udelay(UDELAY);
 	return 0;
@@ -167,24 +148,15 @@ static int i2c_outb(struct i2c_adapter *i2c_adap, unsigned char c)
 		setsda(sb);
 		udelay((UDELAY + 1) / 2);
 		sclhi();
-		/* FIXME do arbitration here:
-		 * if (sb && !getsda()) -> ouch! Get out of here.
-		 *
-		 * Report a unique code, so higher level code can retry
-		 * the whole (combined) message and *NOT* issue STOP.
-		 */
 		scllo();
 	}
 	sdahi();
 	sclhi();
-	/* read ack: SDA should be pulled down by slave, or it may
-	 * NAK (usually to report problems with the data we wrote).
-	 */
-	ack = !getsda();    /* ack: sda is pulled low -> success */
+	/* read ack */
+	ack = !getsda();
 
 	scllo();
 	return ack;
-	/* assert: scl is low (sda undef) */
 }
 
 
@@ -462,7 +434,7 @@ static ssize_t show_addr(struct device *dev, struct device_attribute *attr, char
 	return sprintf(buf, "%d\n", data->addr);
 }
 
-static ssize_t set_addr(struct device *dev, struct device_attribute *attr, char *buf, size_t count)
+static ssize_t set_addr(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
@@ -484,7 +456,7 @@ static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char 
 	return sprintf(buf, "%d\n", data->reg);
 }
 
-static ssize_t set_reg(struct device *dev, struct device_attribute *attr, char *buf, size_t count)
+static ssize_t set_reg(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
@@ -521,33 +493,33 @@ static ssize_t show_data(struct device *dev, struct device_attribute *attr, char
 	int ret;	
 	ret = i2c_transfer(adap, msgs, 2);
 	if (ret != 2) {
-		return -EIO;
+		return sprintf(buf, "Read Error\n");
 	}
-	sprintf(buf, "Read: \n");	
-	return 0;
+	else return sprintf(buf, "Read: %d\n", i2c_buf[0]);	
 }
 
 static ssize_t set_data(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	
+	u8 i2c_buf[2];
 	u8 val;
-	int error;
-	error = kstrtou8(buf, 10, &val);
-	if (error)
-		return error;
-	
-	u8 i2c_buf[2] = { data->reg, val };
-
+	int error, ret;	
 	struct i2c_msg msg = {
 		.addr	= data->addr,
 		.flags	= I2C_M_IGNORE_NAK,
 		.len	= 2,
 		.buf	= i2c_buf,
 	};
+
+
+	error = kstrtou8(buf, 10, &val);
+	if (error)
+		return error;
 	
-	int ret;	
+	i2c_buf[0] = data->reg;
+	i2c_buf[1] = val;
+
 	ret = i2c_transfer(adap, &msg, 1);
 	if (ret != 1) {
 		return -EIO;
