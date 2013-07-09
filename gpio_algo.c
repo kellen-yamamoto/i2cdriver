@@ -13,8 +13,16 @@
 #include <linux/i2c-algo-bit.h>
 #include <linux/gpio.h>
 
-#define GPIO1 17 
+#define GPIO1 17
 #define GPIO2 27
+#define GPIO3 23
+#define GPIO4 24
+#define GPIO5 2
+#define GPIO6 3
+#define GPIO_SDA GPIO3
+#define GPIO_SCL GPIO4
+
+
 
 static int bit_test;	/* see if the line-setting functions work	*/
 module_param(bit_test, int, S_IRUGO);
@@ -30,41 +38,41 @@ MODULE_PARM_DESC(i2c_debug,
 struct gpio_data {
 	u8 addr;
 	u8 reg;
+	char test1[10];
+	char test2[10];
 };
 
 
 /* --- setting states on the bus with the right timing: ---------------	*/
 
-#define UDELAY 10
+#define UDELAY 2
 #define TIMEOUT 500
 
 static void setsda(int val)
 {
-	gpio_direction_output(GPIO1, val);
+	gpio_direction_output(GPIO_SDA, val);
 }
 
 static void setscl(int val)
 {
-	gpio_direction_output(GPIO2, val);
+	gpio_direction_output(GPIO_SCL, val);
 }
 
 static int getsda(void)
 {
 	int ret;
-	gpio_direction_input(GPIO1);
-	ret = gpio_get_value(GPIO1);
+	gpio_direction_input(GPIO_SDA);
+	ret = gpio_get_value(GPIO_SDA);
 	return ret;
 }
 
-/*
 static int getscl(void)
 {
 	int ret;
-	gpio_direction_input(GPIO2);
-	ret = gpio_get_value(GPIO2);
+	gpio_direction_input(GPIO_SCL);
+	ret = gpio_get_value(GPIO_SCL);
 	return ret;
 }
-*/
 
 static inline void sdalo(void)
 {
@@ -90,8 +98,19 @@ static inline void scllo(void)
  */
 static int sclhi(void)
 {
+	unsigned long start;
+
 	setscl(1);
 
+	start = jiffies;
+	while (!getscl()) {
+		if (time_after(jiffies, start + TIMEOUT)) {
+			if (getscl())
+				break;
+			return -ETIMEDOUT;
+		}
+		cpu_relax();
+	}
 	udelay(UDELAY);
 	return 0;
 }
@@ -529,6 +548,71 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 
 static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
 		
+static ssize_t show_2data(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	unsigned char i2c_buf[2];
+	u8 regaddr = data->reg;	
+	struct i2c_msg msgs[2] = {
+		{
+			.addr	= data->addr,
+			.len	= 1,
+			.buf	= &regaddr,
+		}, {
+			.addr	= data->addr,
+			.flags	= I2C_M_RD,
+			.len	= 2,
+			.buf	= i2c_buf,
+		}
+	};
+
+	int ret;	
+	ret = i2c_transfer(adap, msgs, ARRAY_SIZE(msgs));
+	if (ret != ARRAY_SIZE(msgs)) {
+		return sprintf(buf, "Read Error\n");
+	}
+	else return sprintf(buf, "Read: %d %d\n", i2c_buf[0], i2c_buf[1]);	
+}
+
+static ssize_t set_2data(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+	
+	u8 i2c_buf[3];
+	u8 val;
+	int error, ret;
+	char byte1[3];
+	char byte2[3];	
+
+
+	struct i2c_msg msg = {
+		.addr	= data->addr,
+		.flags	= I2C_M_IGNORE_NAK,
+		.len	= 3,
+		.buf	= i2c_buf,
+	};
+
+	i2c_buf[0] = data->reg;	
+	sscanf(buf, "%s %s", byte1, byte2);
+	error = kstrtou8(byte1, 10, &val);
+	if (error)
+		return error;
+	i2c_buf[1] = val;
+	error = kstrtou8(byte2, 10, &val);
+	if(error)
+		return error;
+	i2c_buf[2] = val;
+	
+	ret = i2c_transfer(adap, &msg, 1);
+	if (ret != 1) {
+		return -EIO;
+	}
+	return count;
+}
+
+static DEVICE_ATTR(2data, S_IWUSR | S_IRUGO, show_2data, set_2data);
 
 /* -----exported algorithm data: ------------------------------	*/
 
@@ -557,7 +641,8 @@ static int __init gpio_init(void)
 	device_create_file(&gpio_adapter.dev, &dev_attr_addr);
 	device_create_file(&gpio_adapter.dev, &dev_attr_reg);
 	device_create_file(&gpio_adapter.dev, &dev_attr_data);
-
+	device_create_file(&gpio_adapter.dev, &dev_attr_2data);
+	
 	return 0;
 }
 
