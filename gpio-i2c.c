@@ -12,6 +12,7 @@
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
 #include <linux/gpio.h>
+#include <linux/mutex.h>
 
 #define GPIO1 17
 #define GPIO2 27
@@ -19,8 +20,8 @@
 #define GPIO4 24
 #define GPIO5 2
 #define GPIO6 3
-#define GPIO_SDA GPIO3
-#define GPIO_SCL GPIO4
+#define GPIO_SDA GPIO1
+#define GPIO_SCL GPIO2
 
 
 
@@ -38,8 +39,7 @@ MODULE_PARM_DESC(i2c_debug,
 struct gpio_data {
 	u8 addr;
 	u8 reg;
-	char test1[10];
-	char test2[10];
+    struct mutex lock;
 };
 
 
@@ -389,6 +389,7 @@ static int bit_doAddress(struct i2c_adapter *i2c_adap, struct i2c_msg *msg)
 	return 0;
 }
 
+
 static int bit_xfer(struct i2c_adapter *i2c_adap,
 		    struct i2c_msg msgs[], int num)
 {
@@ -448,21 +449,33 @@ static u32 bit_func(struct i2c_adapter *adap)
 
 static ssize_t show_addr(struct device *dev, struct device_attribute *attr, char *buf)
 {
+    int ret;
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	return sprintf(buf, "%d\n", data->addr);
+
+    mutex_lock(&data->lock);
+
+    ret = sprintf(buf, "%d\n", data->addr);
+
+    mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static ssize_t set_addr(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	
 	u8 addr;
 	int error;
 	
+    mutex_lock(&data->lock);
+	
 	error = kstrtou8(buf, 10, &addr);
 	data->addr = addr;
+
+    mutex_unlock(&data->lock);
+
 	return count;
 }
 
@@ -470,21 +483,33 @@ static DEVICE_ATTR(addr, S_IWUSR | S_IRUGO, show_addr, set_addr);
 
 static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char *buf)
 {
+    int ret;
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	return sprintf(buf, "%d\n", data->reg);
+
+    mutex_lock(&data->lock);
+
+    ret = sprintf(buf, "%d\n", data->reg);
+
+    mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static ssize_t set_reg(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	
 	u8 reg;
 	int error;
 	
+    mutex_lock(&data->lock);
+
 	error = kstrtou8(buf, 10, &reg);
 	data->reg = reg;
+
+    mutex_unlock(&data->lock);
+
 	return count;
 }
 
@@ -496,6 +521,7 @@ static ssize_t show_data(struct device *dev, struct device_attribute *attr, char
 	struct gpio_data *data = i2c_get_adapdata(adap);
 	unsigned char i2c_buf[1];
 	u8 regaddr = data->reg;	
+	int ret;	
 	struct i2c_msg msgs[2] = {
 		{
 			.addr	= data->addr,
@@ -509,8 +535,12 @@ static ssize_t show_data(struct device *dev, struct device_attribute *attr, char
 		}
 	};
 
-	int ret;	
+    mutex_lock(&data->lock);
+
 	ret = i2c_transfer(adap, msgs, 2);
+
+    mutex_unlock(&data->lock);
+
 	if (ret != 2) {
 		return sprintf(buf, "Read Error\n");
 	}
@@ -521,8 +551,7 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	u8 i2c_buf[2];
-	u8 val;
+	u8 val, i2c_buf[2];
 	int error, ret;	
 	struct i2c_msg msg = {
 		.addr	= data->addr,
@@ -531,15 +560,21 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 		.buf	= i2c_buf,
 	};
 
+    mutex_lock(&data->lock);
 
 	error = kstrtou8(buf, 10, &val);
-	if (error)
+	if (error) {
+        mutex_unlock(&data->lock);
 		return error;
-	
+    }
+
 	i2c_buf[0] = data->reg;
 	i2c_buf[1] = val;
 
 	ret = i2c_transfer(adap, &msg, 1);
+
+    mutex_unlock(&data->lock);
+
 	if (ret != 1) {
 		return -EIO;
 	}
@@ -552,7 +587,8 @@ static ssize_t show_2data(struct device *dev, struct device_attribute *attr, cha
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	unsigned char i2c_buf[2];
+	int ret;	
+    unsigned char i2c_buf[2];
 	u8 regaddr = data->reg;	
 	struct i2c_msg msgs[2] = {
 		{
@@ -567,8 +603,12 @@ static ssize_t show_2data(struct device *dev, struct device_attribute *attr, cha
 		}
 	};
 
-	int ret;	
+    mutex_lock(&data->lock);
+    
 	ret = i2c_transfer(adap, msgs, ARRAY_SIZE(msgs));
+
+    mutex_unlock(&data->lock);
+
 	if (ret != ARRAY_SIZE(msgs)) {
 		return sprintf(buf, "Read Error\n");
 	}
@@ -579,33 +619,37 @@ static ssize_t set_2data(struct device *dev, struct device_attribute *attr, cons
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	
-	u8 i2c_buf[3];
-	u8 val;
+	u8 val, i2c_buf[3];
 	int error, ret;
-	char byte1[3];
-	char byte2[3];	
-
-
+	char byte1[3], byte2[3];
 	struct i2c_msg msg = {
 		.addr	= data->addr,
 		.flags	= I2C_M_IGNORE_NAK,
 		.len	= 3,
 		.buf	= i2c_buf,
 	};
+	
+    mutex_lock(&data->lock);
 
 	i2c_buf[0] = data->reg;	
 	sscanf(buf, "%s %s", byte1, byte2);
 	error = kstrtou8(byte1, 10, &val);
-	if (error)
+	if (error) {
+        mutex_unlock(&data->lock);
 		return error;
+    }
 	i2c_buf[1] = val;
 	error = kstrtou8(byte2, 10, &val);
-	if(error)
+	if(error) {
+        mutex_unlock(&data->lock);
 		return error;
+    }
 	i2c_buf[2] = val;
 	
 	ret = i2c_transfer(adap, &msg, 1);
+
+    mutex_unlock(&data->lock);
+
 	if (ret != 1) {
 		return -EIO;
 	}
@@ -614,6 +658,15 @@ static ssize_t set_2data(struct device *dev, struct device_attribute *attr, cons
 
 static DEVICE_ATTR(2data, S_IWUSR | S_IRUGO, show_2data, set_2data);
 
+static ssize_t show_sem(struct device *dev, struct device_attribute *attr, char *buf)
+{
+}
+
+static ssize_t set_sem(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+}
+
+static DEVICE_ATTR(sem, S_IWUSR | S_IRUGO, show_sem, set_sem);
 /* -----exported algorithm data: ------------------------------	*/
 
 const struct i2c_algorithm i2c_bit_algo = {
@@ -633,27 +686,34 @@ static struct i2c_adapter gpio_adapter = {
 static int __init gpio_init(void)
 {
 	struct gpio_data *data;
-	i2c_add_adapter(&gpio_adapter);
+   
+    printk("gpio-i2c init\n");
+	
+    i2c_add_adapter(&gpio_adapter);
 	data = devm_kzalloc(&gpio_adapter.dev, sizeof(struct gpio_data), GFP_KERNEL);
 	if(!data)
 		return -ENOMEM;
+
+    mutex_init(&data->lock);
+
 	i2c_set_adapdata(&gpio_adapter, data);
 	device_create_file(&gpio_adapter.dev, &dev_attr_addr);
 	device_create_file(&gpio_adapter.dev, &dev_attr_reg);
 	device_create_file(&gpio_adapter.dev, &dev_attr_data);
 	device_create_file(&gpio_adapter.dev, &dev_attr_2data);
-	
+    device_create_file(&gpio_adapter.dev, &dev_attr_sem);
+
 	return 0;
 }
 
 static void __exit gpio_exit(void)
 {
+    printk("gpio-i2c exit\n");
 	i2c_del_adapter(&gpio_adapter);
 }
 
 module_init(gpio_init);
 module_exit(gpio_exit);
 
-MODULE_AUTHOR("Kellen Yamamoto");
-MODULE_DESCRIPTION("I2C Bit Banging Algorithm/Adapter for GPIO");
+MODULE_DESCRIPTION("I2C GPIO Bitbanging driver for RPi");
 MODULE_LICENSE("GPL");
