@@ -18,11 +18,11 @@
 #define GPIO2 27
 #define GPIO3 23
 #define GPIO4 24
-#define GPIO5 2
-#define GPIO6 3
+
 #define GPIO_SDA GPIO1
 #define GPIO_SCL GPIO2
-
+#define GPIO_RESERVED1 GPIO3
+#define GPIO_RESERVED2 GPIO4
 
 
 static int bit_test;	/* see if the line-setting functions work	*/
@@ -658,15 +658,73 @@ static ssize_t set_2data(struct device *dev, struct device_attribute *attr, cons
 
 static DEVICE_ATTR(2data, S_IWUSR | S_IRUGO, show_2data, set_2data);
 
-static ssize_t show_sem(struct device *dev, struct device_attribute *attr, char *buf)
+static const struct gpio i2c_gpios[] __initconst_or_module = {
+    {
+        .gpio   = GPIO_SDA,
+        .flags  = GPIOF_OUT_INIT_HIGH,
+        .label  = "gpio-sda",
+    },
+    {
+        .gpio   = GPIO_SCL,
+        .flags  = GPIOF_OUT_INIT_HIGH,
+        .label  = "gpio-scl",
+    },
+    {
+        .gpio   = GPIO_RESERVED1,
+        .label  = "Reserved-i2c",
+    },
+    {
+        .gpio   = GPIO_RESERVED2,
+        .label  = "Reserved-i2c",
+    },
+};
+
+static ssize_t show_lock(struct device *dev, struct device_attribute *attr, char *buf)
 {
+    int ret;
+    struct i2c_adapter *adap = to_i2c_adapter(dev);
+    struct gpio_data *data = i2c_get_adapdata(adap);
+
+    mutex_lock(&data->lock);
+
+    if (gpio_request_array(i2c_gpios, ARRAY_SIZE(i2c_gpios)))
+        ret = sprintf(buf, "%d\n", 0);
+    else ret = sprintf(buf, "%d\n", 1);
+
+    mutex_unlock(&data->lock);
+
+    return ret;
 }
 
-static ssize_t set_sem(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t set_lock(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
+    struct i2c_adapter *adap = to_i2c_adapter(dev);
+    struct gpio_data *data = i2c_get_adapdata(adap);
+
+    mutex_lock(&data->lock);
+
+    gpio_free_array(i2c_gpios, ARRAY_SIZE(i2c_gpios));
+
+    mutex_unlock(&data->lock);
+
+    return count;
 }
 
-static DEVICE_ATTR(sem, S_IWUSR | S_IRUGO, show_sem, set_sem);
+static DEVICE_ATTR(lock, S_IWUSR | S_IRUGO, show_lock, set_lock);
+
+static struct attribute *gpio_attributes[] = {
+    &dev_attr_addr.attr,
+    &dev_attr_reg.attr,
+    &dev_attr_data.attr,
+    &dev_attr_2data.attr,
+    &dev_attr_lock.attr,
+    NULL
+};
+
+static const struct attribute_group gpio_group = {
+    .attrs = gpio_attributes,
+};
+
 /* -----exported algorithm data: ------------------------------	*/
 
 const struct i2c_algorithm i2c_bit_algo = {
@@ -685,6 +743,7 @@ static struct i2c_adapter gpio_adapter = {
 
 static int __init gpio_init(void)
 {
+    int err;
 	struct gpio_data *data;
    
     printk("gpio-i2c init\n");
@@ -697,11 +756,17 @@ static int __init gpio_init(void)
     mutex_init(&data->lock);
 
 	i2c_set_adapdata(&gpio_adapter, data);
+
+    err = sysfs_create_group(&gpio_adapter.dev.kobj, &gpio_group);
+    if (err < 0)
+        return err;
+    /*
 	device_create_file(&gpio_adapter.dev, &dev_attr_addr);
 	device_create_file(&gpio_adapter.dev, &dev_attr_reg);
 	device_create_file(&gpio_adapter.dev, &dev_attr_data);
 	device_create_file(&gpio_adapter.dev, &dev_attr_2data);
-    device_create_file(&gpio_adapter.dev, &dev_attr_sem);
+    device_create_file(&gpio_adapter.dev, &dev_attr_lock);
+    */
 
 	return 0;
 }
