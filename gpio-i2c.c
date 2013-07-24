@@ -39,6 +39,7 @@ MODULE_PARM_DESC(i2c_debug,
 struct gpio_data {
 	u8 addr;
 	u8 reg;
+    u8 multi;
     struct mutex lock;
 };
 
@@ -203,7 +204,7 @@ static int i2c_inb(struct i2c_adapter *i2c_adap)
 /* ----- Utility functions
  */
 
-/* try_address tries to contact a chip for a number of
+/* try_address tries to contact a chip for a data->multiber of
  * times before it gives up.
  * return values:
  * 1 chip answered
@@ -488,9 +489,9 @@ static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char 
 	struct gpio_data *data = i2c_get_adapdata(adap);
 
     mutex_lock(&data->lock);
-
+   
     ret = sprintf(buf, "%d\n", data->reg);
-
+    
     mutex_unlock(&data->lock);
 
 	return ret;
@@ -583,12 +584,13 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 
 static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
 		
-static ssize_t show_2data(struct device *dev, struct device_attribute *attr, char *buf)
+#define MAX_I2C 32
+static ssize_t show_mdata(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
 	int ret;	
-    unsigned char i2c_buf[2];
+    unsigned char i2c_buf[MAX_I2C];
 	u8 regaddr = data->reg;	
 	struct i2c_msg msgs[2] = {
 		{
@@ -598,7 +600,7 @@ static ssize_t show_2data(struct device *dev, struct device_attribute *attr, cha
 		}, {
 			.addr	= data->addr,
 			.flags	= I2C_M_RD,
-			.len	= 2,
+			.len	= data->multi,
 			.buf	= i2c_buf,
 		}
 	};
@@ -609,42 +611,42 @@ static ssize_t show_2data(struct device *dev, struct device_attribute *attr, cha
 
     mutex_unlock(&data->lock);
 
-	if (ret != ARRAY_SIZE(msgs)) {
+	if (ret < ARRAY_SIZE(msgs)) {
 		return sprintf(buf, "Read Error\n");
 	}
-	else return sprintf(buf, "Read: %d %d\n", i2c_buf[0], i2c_buf[1]);	
+	else return sprintf(buf, "%s\n", i2c_buf);	
 }
 
-static ssize_t set_2data(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t set_mdata(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
 	struct gpio_data *data = i2c_get_adapdata(adap);
-	u8 val, i2c_buf[3];
-	int error, ret;
-	char byte1[3], byte2[3];
+	u8 val, i2c_buf[MAX_I2C+1];
+    char byte[9];
+	int error, ret, i, n;
+
 	struct i2c_msg msg = {
 		.addr	= data->addr,
 		.flags	= I2C_M_IGNORE_NAK,
-		.len	= 3,
+		.len	= data->multi+1,
 		.buf	= i2c_buf,
 	};
 	
     mutex_lock(&data->lock);
 
-	i2c_buf[0] = data->reg;	
-	sscanf(buf, "%s %s", byte1, byte2);
-	error = kstrtou8(byte1, 10, &val);
-	if (error) {
-        mutex_unlock(&data->lock);
-		return error;
+    i2c_buf[0] = data->reg;
+
+    for (i=0; i<data->multi; i++) {
+        sscanf(buf, " %s%n", byte, &n);
+        buf += n;
+        error = kstrtou8(byte, 10, &val);
+        if (error) {
+            mutex_unlock(&data->lock);
+            return error;
+        }
+        printk("[%d]\n", val);
+        i2c_buf[i+1] = val;
     }
-	i2c_buf[1] = val;
-	error = kstrtou8(byte2, 10, &val);
-	if(error) {
-        mutex_unlock(&data->lock);
-		return error;
-    }
-	i2c_buf[2] = val;
 	
 	ret = i2c_transfer(adap, &msg, 1);
 
@@ -656,7 +658,7 @@ static ssize_t set_2data(struct device *dev, struct device_attribute *attr, cons
 	return count;
 }
 
-static DEVICE_ATTR(2data, S_IWUSR | S_IRUGO, show_2data, set_2data);
+static DEVICE_ATTR(mdata, S_IWUSR | S_IRUGO, show_mdata, set_mdata);
 
 static const struct gpio i2c_gpios[] __initconst_or_module = {
     {
@@ -712,12 +714,37 @@ static ssize_t set_lock(struct device *dev, struct device_attribute *attr, const
 
 static DEVICE_ATTR(lock, S_IWUSR | S_IRUGO, show_lock, set_lock);
 
+static ssize_t set_multi(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+    struct i2c_adapter *adap = to_i2c_adapter(dev);
+    struct gpio_data *data = i2c_get_adapdata(adap);
+    u8 val;
+    int error;
+
+    mutex_lock(&data->lock);
+    
+    error = kstrtou8(buf, 10, &val);
+    if (error) {
+        mutex_unlock(&data->lock);
+        return error;
+    }
+
+    data->multi = val;
+
+    mutex_unlock(&data->lock);
+
+    return count;
+}
+
+static DEVICE_ATTR(multi, S_IWUSR | S_IRUGO, NULL, set_multi);
+
 static struct attribute *gpio_attributes[] = {
     &dev_attr_addr.attr,
     &dev_attr_reg.attr,
     &dev_attr_data.attr,
-    &dev_attr_2data.attr,
+    &dev_attr_mdata.attr,
     &dev_attr_lock.attr,
+    &dev_attr_multi.attr,
     NULL
 };
 
@@ -764,7 +791,7 @@ static int __init gpio_init(void)
 	device_create_file(&gpio_adapter.dev, &dev_attr_addr);
 	device_create_file(&gpio_adapter.dev, &dev_attr_reg);
 	device_create_file(&gpio_adapter.dev, &dev_attr_data);
-	device_create_file(&gpio_adapter.dev, &dev_attr_2data);
+	device_create_file(&gpio_adapter.dev, &dev_attr_mdata);
     device_create_file(&gpio_adapter.dev, &dev_attr_lock);
     */
 
