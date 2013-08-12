@@ -26,28 +26,17 @@
 
 #define MAX_I2C 32
 
-static int bit_test;	/* see if the line-setting functions work	*/
-module_param(bit_test, int, S_IRUGO);
-MODULE_PARM_DESC(bit_test, "lines testing - 0 off; 1 report; 2 fail if stuck");
-
-#ifdef DEBUG
-static int i2c_debug = 1;
-module_param(i2c_debug, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(i2c_debug,
-		 "debug level - 0 off; 1 normal; 2 verbose; 3 very verbose");
-#endif
-
 struct gpio_data {
 	u8 addr;
 	u8 reg;
     u8 numbytes;
     u8 extcmd;
+    u8 err;
     struct mutex lock;
 };
 
 
-/* --- setting states on the bus with the right timing: ---------------	*/
-
+/* GPIO Level bit manipulation */
 #define UDELAY 2
 #define TIMEOUT 500
 
@@ -70,20 +59,9 @@ static void setscl(int val)
 static int getsda(void)
 {
 	int ret;
-//	gpio_direction_input(GPIO_SDA);
 	ret = gpio_get_value(GPIO_SDA);
 	return ret;
 }
-
-/*
-static int getscl(void)
-{
-	int ret;
-	gpio_direction_input(GPIO_SCL);
-	ret = gpio_get_value(GPIO_SCL);
-	return ret;
-}
-*/
 
 static inline void sdalo(void)
 {
@@ -103,35 +81,17 @@ static inline void scllo(void)
 	udelay(UDELAY / 2);
 }
 
-/*
- * Raise scl line, and do checking for delays. This is necessary for slower
- * devices.
- */
 static int sclhi(void)
 {
-	//unsigned long start;
-
 	setscl(1);
-/*
-	start = jiffies;
-	while (!getscl()) {
-		if (time_after(jiffies, start + TIMEOUT)) {
-			if (getscl())
-				break;
-			return -ETIMEDOUT;
-		}
-		cpu_relax();
-	}
-    */
 	udelay(UDELAY);
 	return 0;
 }
 
 
-/* --- other auxiliary functions --------------------------------------	*/
+/* I2C Auxillary functions */
 static void i2c_start(void)
 {
-	/* assert: scl, sda are high */
 	setsda(0);
 	udelay(UDELAY);
 	scllo();
@@ -139,7 +99,6 @@ static void i2c_start(void)
 
 static void i2c_repstart(void)
 {
-	/* assert: scl is low */
 	sdahi();
 	sclhi();
 	setsda(0);
@@ -150,7 +109,6 @@ static void i2c_repstart(void)
 
 static void i2c_stop(void)
 {
-	/* assert: scl is low */
 	sdalo();
 	sclhi();
 	setsda(1);
@@ -233,7 +191,6 @@ static int try_address(struct i2c_adapter *i2c_adap,
 			break;
 		i2c_stop();
 		udelay(UDELAY);
-		//yield();
 		i2c_start();
 	}
 	return ret;
@@ -456,6 +413,19 @@ static u32 bit_func(struct i2c_adapter *adap)
 }
 
 /*------------ SYSFS Interface -------------*/
+/* 
+ * Sysfs device attr files will accept decimal or hex values
+ * if it has a 0x prefix.  Sysfs files that accept multiple bytes
+ * need them to be space separated.  
+ */
+
+
+
+/* 
+ * Sysfs file for testing chip presence
+ * Chip present will return > -5
+ * Empty address returns -6
+ */
 static ssize_t show_test(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -480,6 +450,7 @@ static ssize_t show_test(struct device *dev, struct device_attribute *attr, char
 
 static DEVICE_ATTR(test, S_IRUGO, show_test, NULL);
 
+/* Sysfs file for storing I2C address */
 static ssize_t show_addr(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -514,6 +485,7 @@ static ssize_t set_addr(struct device *dev, struct device_attribute *attr, const
 
 static DEVICE_ATTR(addr, S_IWUSR | S_IRUGO, show_addr, set_addr);
 
+/* Sysfs file for storing extended command byte for SMBus */
 static ssize_t show_extcmd(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -548,6 +520,7 @@ static ssize_t set_extcmd(struct device *dev, struct device_attribute *attr, con
 
 static DEVICE_ATTR(extcmd, S_IWUSR | S_IRUGO, show_extcmd, set_extcmd);
 
+/* Sysfs file for storing i2c register byte */
 static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -582,6 +555,7 @@ static ssize_t set_reg(struct device *dev, struct device_attribute *attr, const 
 
 static DEVICE_ATTR(reg, S_IWUSR | S_IRUGO, show_reg, set_reg);
 
+/* Sysfs file for doing single i2c read/write transactions */
 static ssize_t show_data(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
@@ -622,7 +596,7 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 	int error, ret;	
 	struct i2c_msg msg = {
 		.addr	= data->addr,
-		//.flags	= I2C_M_IGNORE_NAK,
+//		.flags	= I2C_M_IGNORE_NAK,
 		.len	= 2,
 		.buf	= i2c_buf,
 	};
@@ -643,13 +617,15 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
     mutex_unlock(&data->lock);
 
 	if (ret != 1) {
-		return -EIO;
+		data->err = EIO;
 	}
+    else data->err = 0;
 	return count;
 }
 
 static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
 
+/* Syfs file for performing SMBus fast transactions (no cmd byte) */
 static ssize_t show_srbytes(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
@@ -690,7 +666,7 @@ static ssize_t set_srbytes(struct device *dev, struct device_attribute *attr, co
 
 	struct i2c_msg msg = {
 		.addr	= data->addr,
-		.flags	= I2C_M_IGNORE_NAK,
+//		.flags	= I2C_M_IGNORE_NAK,
 		.len	= data->numbytes+1,
 		.buf	= i2c_buf,
 	};
@@ -705,7 +681,7 @@ static ssize_t set_srbytes(struct device *dev, struct device_attribute *attr, co
             mutex_unlock(&data->lock);
             return error;
         }
-        i2c_buf[0] = val;
+        i2c_buf[i] = val;
     }
 	
 	ret = i2c_transfer(adap, &msg, 1);
@@ -713,13 +689,16 @@ static ssize_t set_srbytes(struct device *dev, struct device_attribute *attr, co
     mutex_unlock(&data->lock);
 
 	if (ret != 1) {
-		return -EIO;
+		data->err = EIO;
 	}
+    else data->err = 0;
+
     return count;
 }
 
 static DEVICE_ATTR(srbytes, S_IWUSR | S_IRUGO, show_srbytes, set_srbytes);
 
+/* Sysfs file for performing multi byte i2c transactions */
 static ssize_t show_wrbytes(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
@@ -765,7 +744,7 @@ static ssize_t set_wrbytes(struct device *dev, struct device_attribute *attr, co
 
 	struct i2c_msg msg = {
 		.addr	= data->addr,
-		.flags	= I2C_M_IGNORE_NAK,
+//		.flags	= I2C_M_IGNORE_NAK,
 		.len	= data->numbytes+1,
 		.buf	= i2c_buf,
 	};
@@ -790,13 +769,16 @@ static ssize_t set_wrbytes(struct device *dev, struct device_attribute *attr, co
     mutex_unlock(&data->lock);
 
 	if (ret != 1) {
-		return -EIO;
+		data->err = EIO;
 	}
+    else data->err = 0;
+
 	return count;
 }
 
 static DEVICE_ATTR(wrbytes, S_IWUSR | S_IRUGO, show_wrbytes, set_wrbytes);
 
+/* Sysfs file for performing extended command SMBus read/write transactions */
 static ssize_t show_extwrbytes(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct i2c_adapter *adap = to_i2c_adapter(dev);
@@ -846,7 +828,7 @@ static ssize_t set_extwrbytes(struct device *dev, struct device_attribute *attr,
 
     struct i2c_msg msg = {
         .addr   = data->addr,
-        .flags  = I2C_M_IGNORE_NAK,
+       // .flags  = I2C_M_IGNORE_NAK,
         .len    = data->numbytes+2,
         .buf    = i2c_buf,
     };
@@ -872,8 +854,10 @@ static ssize_t set_extwrbytes(struct device *dev, struct device_attribute *attr,
     mutex_unlock(&data->lock);
 
     if (ret != 1) {
-        return -EIO;
+        data->err = EIO;
     }
+    else data->err = 0;
+
     return count;
 }
 
@@ -900,6 +884,12 @@ static const struct gpio i2c_gpios[] __initconst_or_module = {
     },
 };
 
+/* Sysfs file for reserving GPIOs while doing transactions 
+ * Reading from lock will return lock status 
+ *      1: free
+ *      0: busy
+ * Writing anything to lock will free it
+ */
 static ssize_t show_lock(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -933,6 +923,7 @@ static ssize_t set_lock(struct device *dev, struct device_attribute *attr, const
 
 static DEVICE_ATTR(lock, S_IWUSR | S_IRUGO, show_lock, set_lock);
 
+/* Sets number of bytes for I2C transactions to allow multiple byte messages */ 
 static ssize_t set_numbytes(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
     struct i2c_adapter *adap = to_i2c_adapter(dev);
@@ -957,8 +948,25 @@ static ssize_t set_numbytes(struct device *dev, struct device_attribute *attr, c
 
 static DEVICE_ATTR(numbytes, S_IWUSR | S_IRUGO, NULL, set_numbytes);
 
+static ssize_t show_err(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    int ret;
+	struct i2c_adapter *adap = to_i2c_adapter(dev);
+	struct gpio_data *data = i2c_get_adapdata(adap);
+
+    mutex_lock(&data->lock);
+   
+    ret = sprintf(buf, "%d\n", data->err);
+    
+    mutex_unlock(&data->lock);
+
+	return ret;
+}
+static DEVICE_ATTR(err, S_IRUGO, show_err, NULL);
+
 static struct attribute *gpio_attributes[] = {
     &dev_attr_test.attr,
+    &dev_attr_err.attr,
     &dev_attr_addr.attr,
     &dev_attr_reg.attr,
     &dev_attr_data.attr,
@@ -984,6 +992,8 @@ const struct i2c_algorithm i2c_bit_algo = {
 
 
 /*-----Adapter code---------------------------------------------*/
+
+/* Registers I2C adapter in I2C kernel driver stack and creates sysfs files */
 
 static struct i2c_adapter gpio_adapter = {
 	.owner	= THIS_MODULE,
